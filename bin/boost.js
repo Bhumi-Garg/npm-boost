@@ -1,26 +1,38 @@
 #!/usr/bin/env node
-import { program } from 'commander';
-import { runDeps } from '../src/commands/deps.js';
+import { program } from "commander";
+import cleanCommand from "../src/commands/clean.js";
+import securityCommand from "../src/commands/security.js";
+import { runDeps } from "../src/commands/deps.js";
 
 program
-  .name('boost')
-  .description('Project health toolkit')
-  .version('1.0.0');
+  .name("boost")
+  .description("Project health toolkit")
+  .version("1.0.0");
 
+// deps command
 program
-  .command('deps')
-  .description('Analyse dependencies — unused, heavy, and alternatives')
+  .command("deps")
+  .description("Analyse dependencies — unused, heavy, and alternatives")
   .action(runDeps);
 
-// When no subcommand is passed, run everything
+// security command
 program
-  .action(async () => {
-    await runDeps();
-    // other commands will go here as you build them
-    // await runScan();
-    // await runClean();
-    // await runScore();
-    // await runSecurity();
-  });
+  .command("security")
+  .description("Check project for security risks")
+  .action(securityCommand);
+
+// clean command
+program
+  .command("clean")
+  .description("Remove temporary files and empty folders")
+  .action(cleanCommand);
+
+// default action (when no command is passed)
+program.action(async () => {
+  await runDeps();
+  // future:
+  // await securityCommand();
+  // await cleanCommand();
+});
 
 program.parse();
