@@ -1,4 +1,4 @@
-# proj-boost 🚀
+# proj-boost 
 
 > A CLI toolkit to analyze, clean, and score the health of any JavaScript/TypeScript project — in seconds.
 <img width="1682" height="1220" alt="image" src="https://github.com/user-attachments/assets/49de6155-e7c6-4705-82ff-73988f9cea43" />
@@ -189,7 +189,7 @@ export default {
 
 ---
 
-## ✅ Supported Project Types
+## Supported Project Types
 
 - React / Next.js
 - Node.js / Express
@@ -198,14 +198,14 @@ export default {
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 - Node.js `>= 18.0.0`
 - npm `>= 8.0.0`
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Pull requests are welcome! For major changes, please open an issue first.
 ```bash
@@ -217,7 +217,3 @@ boost scan
 ```
 
 ---
-
-## 📄 License
-
-ISC © [Bhumi Garg](https://github.com/Bhumi-Garg)
