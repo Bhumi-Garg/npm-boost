@@ -7,7 +7,6 @@ import { runScore } from '../src/commands/score.js';
 import cleanCommand from '../src/commands/clean.js';
 import securityCommand from '../src/commands/security.js';
 
-
 program
   .name('boost')
   .description('Project health toolkit')
@@ -30,21 +29,21 @@ program
 
 program
   .command('security')
-  .description('Check project for security risks')
+  .description('Check for committed secrets and vulnerabilities')
   .action(securityCommand);
 
-  program
+program
   .command('score')
-  .description('Show overall project health score out of 100')
+  .description('Show project health score out of 100')
   .action(runScore);
 
-// default: run everything when no command is passed (score runs everything internally)
+// No subcommand → run everything
 if (process.argv.length === 2) {
-  // await runScan();
-  // await runDeps();
-  // await cleanCommand();
-  // await securityCommand();
-  await runScore(); // score runs everything internally
+  await runScan();
+  await runDeps();
+  await cleanCommand();
+  await securityCommand();
+  await runScore();
 } else {
   program.parse();
 }

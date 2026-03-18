@@ -1,48 +1,152 @@
-export function calculateScore(allResults) {
-  const flat = allResults.flat().filter(Boolean);
+import { checkUnusedPackages } from '../deps/unusedPackages.js';
+import { checkHeavyPackages } from '../deps/heavyPackages.js';
+import { checkLighterAlternatives } from '../deps/lighterAlternatives.js';
+import envCommitted from '../security/envCommitted.js';
+import hardcodedKeys from '../security/hardcodedKeys.js';
+import auditWrapper from '../security/auditWrapper.js';
+import tempFiles from '../cleaners/tempFiles.js';
+import emptyFolders from '../cleaners/emptyFolders.js';
+import { scanUnusedFiles } from '../scanners/unusedFiles.js';
+import { scanLargeFiles } from '../scanners/largeFiles.js';
+import { scanDuplicateCode } from '../scanners/duplicateCode.js';
+import { scanUnusedAssets } from '../scanners/unusedAssets.js';
+import { scanConsoleLogs } from '../scanners/consoleLogs.js';
 
-  let score = 100;
-  const breakdown = [];
+// ─── Scoring config ───────────────────────────────────────────────────────────
+//
+// Each check has:
+//   maxPts     — full marks if zero issues
+//   deductPer  — points deducted per issue found
+//   errorPts   — score assigned if the check itself errors out
+//
+// Security is weighted heaviest — a single committed .env wipes its check.
+// Scan is second — code quality matters.
+// Deps is third — dependency hygiene.
+// Clean is lightest — cosmetic, not critical.
+//
+const CHECKS = {
+  // Scan — 40 pts total
+  unusedFiles:   { maxPts: 10, deductPer: 2, errorPts: 5 },
+  largeFiles:    { maxPts: 8,  deductPer: 2, errorPts: 4 },
+  duplicateCode: { maxPts: 10, deductPer: 3, errorPts: 5 },
+  unusedAssets:  { maxPts: 6,  deductPer: 1, errorPts: 3 },
+  consoleLogs:   { maxPts: 6,  deductPer: 1, errorPts: 3 },
 
-  const deductions = {
+  // Deps — 20 pts total
+  unused:        { maxPts: 8,  deductPer: 2, errorPts: 4 },
+  heavy:         { maxPts: 6,  deductPer: 2, errorPts: 3 },
+  alternatives:  { maxPts: 6,  deductPer: 1, errorPts: 3 },
+
+  // Security — 30 pts total
+  envCommitted:  { maxPts: 12, deductPer: 12, errorPts: 0 },
+  hardcodedKeys: { maxPts: 12, deductPer: 4,  errorPts: 0 },
+  auditVulns:    { maxPts: 6,  deductPer: 2,  errorPts: 3 },
+
+  // Clean — 10 pts total
+  tempFiles:     { maxPts: 5,  deductPer: 1, errorPts: 2 },
+  emptyFolders:  { maxPts: 5,  deductPer: 1, errorPts: 2 },
+};
+
+const CATEGORIES = {
+  scan:     { label: 'Code Quality',  keys: ['unusedFiles', 'largeFiles', 'duplicateCode', 'unusedAssets', 'consoleLogs'], maxPts: 40 },
+  security: { label: 'Security',      keys: ['envCommitted', 'hardcodedKeys', 'auditVulns'],                               maxPts: 30 },
+  deps:     { label: 'Dependencies',  keys: ['unused', 'heavy', 'alternatives'],                                           maxPts: 20 },
+  clean:    { label: 'Cleanliness',   keys: ['tempFiles', 'emptyFolders'],                                                 maxPts: 10 },
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function scoreCheck(result, check) {
+  if (result.status === 'error') return check.errorPts;
+  const deducted = result.count * check.deductPer;
+  return Math.max(0, check.maxPts - deducted);
+}
+
+function letterGrade(score) {
+  if (score >= 90) return 'A';
+  if (score >= 80) return 'B';
+  if (score >= 70) return 'C';
+  if (score >= 50) return 'D';
+  return 'F';
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
+
+export async function computeHealthScore() {
+  // run all checks in parallel
+  const [
+    unusedFilesResult, largeFilesResult, duplicateCodeResult,
+    unusedAssetsResult, consoleLogsResult,
+    unused, heavy, alternatives,
+    envResult, keysResult, auditResult,
+    tempResult, foldersResult,
+  ] = await Promise.all([
+    scanUnusedFiles(),
+    scanLargeFiles(),
+    scanDuplicateCode(),
+    scanUnusedAssets(),
+    scanConsoleLogs(),
+    checkUnusedPackages(),
+    checkHeavyPackages(),
+    checkLighterAlternatives(),
+    envCommitted(),
+    hardcodedKeys(),
+    auditWrapper(),
+    tempFiles(),
+    emptyFolders(),
+  ]);
+
+  const allResults = {
     // scan
-    'Unused Files':           { warn: 10, error: 15 },
-    'Large Files':            { warn: 5,  error: 10 },
-    'Duplicate Code':         { warn: 8,  error: 12 },
-    'Unused Assets':          { warn: 3,  error: 6  },
-    'Console Logs':           { warn: 5,  error: 8  },
-    // deps — match exact labels from deps.js
-    'Unused packages':        { warn: 8,  error: 12 },
-    'Heavy packages':         { warn: 4,  error: 8  },
-    'Lighter alternatives':   { warn: 2,  error: 4  },
-    // clean — match exact labels from cleaners
-    'Temporary Files':        { warn: 3,  error: 5  },
-    'Empty Folders':          { warn: 2,  error: 3  },
-    // security — match exact labels from security files
-    '.env Files':             { warn: 15, error: 20 },
-    'Hardcoded Secrets':      { warn: 15, error: 20 },
-    'npm Vulnerabilities':    { warn: 10, error: 15 },
+    unusedFiles:   unusedFilesResult,
+    largeFiles:    largeFilesResult,
+    duplicateCode: duplicateCodeResult,
+    unusedAssets:  unusedAssetsResult,
+    consoleLogs:   consoleLogsResult,
+    // deps
+    unused,
+    heavy,
+    alternatives,
+    // security
+    envCommitted:  envResult,
+    hardcodedKeys: keysResult,
+    auditVulns:    auditResult,
+    // clean
+    tempFiles:     tempResult,
+    emptyFolders:  foldersResult,
   };
 
-  for (const result of flat) {
-    if (!result?.label) continue;
-
-    const rule = deductions[result.label];
-    if (!rule) continue;
-
-    if (result.status === 'warn') {
-      score -= rule.warn;
-      breakdown.push({ label: result.label, status: 'warn', summary: result.summary });
-    } else if (result.status === 'error') {
-      score -= rule.error;
-      breakdown.push({ label: result.label, status: 'error', summary: result.summary });
-    } else {
-      breakdown.push({ label: result.label, status: 'ok', summary: result.summary });
-    }
+  // score each individual check
+  const checkScores = {};
+  for (const [key, check] of Object.entries(CHECKS)) {
+    checkScores[key] = {
+      pts:    scoreCheck(allResults[key], check),
+      maxPts: check.maxPts,
+      result: allResults[key],
+    };
   }
 
+  // roll up into categories
+  const categoryScores = {};
+  for (const [catKey, cat] of Object.entries(CATEGORIES)) {
+    const earned = cat.keys.reduce((sum, k) => sum + checkScores[k].pts, 0);
+    categoryScores[catKey] = {
+      label:  cat.label,
+      earned,
+      maxPts: cat.maxPts,
+      pct:    Math.round((earned / cat.maxPts) * 100),
+    };
+  }
+
+  const totalEarned = Object.values(categoryScores).reduce((s, c) => s + c.earned, 0);
+  const totalMax    = Object.values(categoryScores).reduce((s, c) => s + c.maxPts, 0);
+  const score       = Math.round((totalEarned / totalMax) * 100);
+
   return {
-    score: Math.max(0, score),
-    breakdown,
+    score,
+    grade:      letterGrade(score),
+    categories: categoryScores,
+    checks:     checkScores,
+    results:    allResults,
   };
 }
