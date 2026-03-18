@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./src/index.js",
   "bin": {
-    "boost": "./bin/boost.js"
+    "boost": "bin/boost.js"
   },
   "scripts": {
     "test": "vitest"
