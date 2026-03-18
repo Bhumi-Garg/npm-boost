@@ -1,22 +1,27 @@
 import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { loadConfig } from '../utils/config.js';
 
 export async function scanDuplicateCode() {
   const config = await loadConfig();
-  const extensions = config.scan.extensions.map((e) => e.replace('.', '')).join(',');
+  const reportDir = path.join(process.cwd(), '.boost-temp');
+  const reportFile = path.join(reportDir, 'jscpd-report.json');
 
   try {
-    const output = execSync(
-      `npx jscpd ${process.cwd()} --min-lines 5 --min-tokens 50 --reporters json --silent --ignore "node_modules/**,dist/**,.git/**"`,
+    const srcDir = path.join(process.cwd(), 'src');
+    const scanTarget = fs.existsSync(srcDir) ? srcDir : process.cwd();
+
+    execSync(
+      `npx jscpd "${scanTarget}" --min-lines 5 --min-tokens 50 --reporters json --silent --output "${reportDir}"`,
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
     );
 
     let duplicates = [];
-    try {
-      const json = JSON.parse(output);
+    if (fs.existsSync(reportFile)) {
+      const json = JSON.parse(fs.readFileSync(reportFile, 'utf-8'));
       duplicates = json.duplicates || [];
-    } catch {}
+    }
 
     return {
       label: 'Duplicate Code',
@@ -27,7 +32,9 @@ export async function scanDuplicateCode() {
         const fileB = d.secondFile?.name?.replace(process.cwd() + '/', '') || '';
         return `${fileA} ↔ ${fileB}`;
       }),
-      summary: duplicates.length > 0 ? `${duplicates.length} duplicate block(s) found` : 'No duplicate code found',
+      summary: duplicates.length > 0
+        ? `${duplicates.length} duplicate block(s) found`
+        : 'No duplicate code found',
     };
   } catch {
     return {
@@ -37,5 +44,10 @@ export async function scanDuplicateCode() {
       data: [],
       summary: 'Could not run duplicate check',
     };
+  } finally {
+    // always clean up temp folder after reading
+    if (fs.existsSync(reportDir)) {
+      fs.rmSync(reportDir, { recursive: true, force: true });
+    }
   }
 }

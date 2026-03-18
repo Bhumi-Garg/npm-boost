@@ -11,3 +11,5 @@ Thumbs.db
 .eslintcache
 coverage/
 .nyc_output/
+.boost-temp/
+report/
