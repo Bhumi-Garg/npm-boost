@@ -1,152 +1,133 @@
-import { checkUnusedPackages } from '../deps/unusedPackages.js';
-import { checkHeavyPackages } from '../deps/heavyPackages.js';
-import { checkLighterAlternatives } from '../deps/lighterAlternatives.js';
-import envCommitted from '../security/envCommitted.js';
-import hardcodedKeys from '../security/hardcodedKeys.js';
-import auditWrapper from '../security/auditWrapper.js';
-import tempFiles from '../cleaners/tempFiles.js';
-import emptyFolders from '../cleaners/emptyFolders.js';
-import { scanUnusedFiles } from '../scanners/unusedFiles.js';
-import { scanLargeFiles } from '../scanners/largeFiles.js';
-import { scanDuplicateCode } from '../scanners/duplicateCode.js';
-import { scanUnusedAssets } from '../scanners/unusedAssets.js';
-import { scanConsoleLogs } from '../scanners/consoleLogs.js';
-
-// ─── Scoring config ───────────────────────────────────────────────────────────
-//
-// Each check has:
-//   maxPts     — full marks if zero issues
-//   deductPer  — points deducted per issue found
-//   errorPts   — score assigned if the check itself errors out
-//
-// Security is weighted heaviest — a single committed .env wipes its check.
-// Scan is second — code quality matters.
-// Deps is third — dependency hygiene.
-// Clean is lightest — cosmetic, not critical.
-//
-const CHECKS = {
-  // Scan — 40 pts total
-  unusedFiles:   { maxPts: 10, deductPer: 2, errorPts: 5 },
-  largeFiles:    { maxPts: 8,  deductPer: 2, errorPts: 4 },
-  duplicateCode: { maxPts: 10, deductPer: 3, errorPts: 5 },
-  unusedAssets:  { maxPts: 6,  deductPer: 1, errorPts: 3 },
-  consoleLogs:   { maxPts: 6,  deductPer: 1, errorPts: 3 },
-
-  // Deps — 20 pts total
-  unused:        { maxPts: 8,  deductPer: 2, errorPts: 4 },
-  heavy:         { maxPts: 6,  deductPer: 2, errorPts: 3 },
-  alternatives:  { maxPts: 6,  deductPer: 1, errorPts: 3 },
-
-  // Security — 30 pts total
-  envCommitted:  { maxPts: 12, deductPer: 12, errorPts: 0 },
-  hardcodedKeys: { maxPts: 12, deductPer: 4,  errorPts: 0 },
-  auditVulns:    { maxPts: 6,  deductPer: 2,  errorPts: 3 },
-
-  // Clean — 10 pts total
-  tempFiles:     { maxPts: 5,  deductPer: 1, errorPts: 2 },
-  emptyFolders:  { maxPts: 5,  deductPer: 1, errorPts: 2 },
-};
-
-const CATEGORIES = {
-  scan:     { label: 'Code Quality',  keys: ['unusedFiles', 'largeFiles', 'duplicateCode', 'unusedAssets', 'consoleLogs'], maxPts: 40 },
-  security: { label: 'Security',      keys: ['envCommitted', 'hardcodedKeys', 'auditVulns'],                               maxPts: 30 },
-  deps:     { label: 'Dependencies',  keys: ['unused', 'heavy', 'alternatives'],                                           maxPts: 20 },
-  clean:    { label: 'Cleanliness',   keys: ['tempFiles', 'emptyFolders'],                                                 maxPts: 10 },
-};
+import chalk from 'chalk';
+import { computeHealthScore } from '../scorer/healthScore.js';
+import { logger } from '../utils/logger.js';
+import { startSpinner, stopSpinner } from '../utils/spinner.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function scoreCheck(result, check) {
-  if (result.status === 'error') return check.errorPts;
-  const deducted = result.count * check.deductPer;
-  return Math.max(0, check.maxPts - deducted);
+function scoreColor(score) {
+  if (score >= 90) return chalk.green;
+  if (score >= 70) return chalk.cyan;
+  if (score >= 50) return chalk.yellow;
+  return chalk.red;
 }
 
-function letterGrade(score) {
-  if (score >= 90) return 'A';
-  if (score >= 80) return 'B';
-  if (score >= 70) return 'C';
-  if (score >= 50) return 'D';
-  return 'F';
+function gradeColor(grade) {
+  if (grade === 'A') return chalk.green;
+  if (grade === 'B') return chalk.cyan;
+  if (grade === 'C') return chalk.yellow;
+  if (grade === 'D') return chalk.red;
+  return chalk.bgRed.white;
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+function statusIcon(status) {
+  if (status === 'ok')    return chalk.green('✔');
+  if (status === 'warn')  return chalk.yellow('⚠');
+  if (status === 'error') return chalk.red('✖');
+  return chalk.dim('–');
+}
 
-export async function computeHealthScore() {
-  // run all checks in parallel
-  const [
-    unusedFilesResult, largeFilesResult, duplicateCodeResult,
-    unusedAssetsResult, consoleLogsResult,
-    unused, heavy, alternatives,
-    envResult, keysResult, auditResult,
-    tempResult, foldersResult,
-  ] = await Promise.all([
-    scanUnusedFiles(),
-    scanLargeFiles(),
-    scanDuplicateCode(),
-    scanUnusedAssets(),
-    scanConsoleLogs(),
-    checkUnusedPackages(),
-    checkHeavyPackages(),
-    checkLighterAlternatives(),
-    envCommitted(),
-    hardcodedKeys(),
-    auditWrapper(),
-    tempFiles(),
-    emptyFolders(),
-  ]);
+function bar(pct, width = 24) {
+  const filled = Math.round((pct / 100) * width);
+  const empty  = width - filled;
+  const col    = scoreColor(pct);
+  return col('█'.repeat(filled)) + chalk.dim('░'.repeat(empty));
+}
 
-  const allResults = {
-    // scan
-    unusedFiles:   unusedFilesResult,
-    largeFiles:    largeFilesResult,
-    duplicateCode: duplicateCodeResult,
-    unusedAssets:  unusedAssetsResult,
-    consoleLogs:   consoleLogsResult,
-    // deps
-    unused,
-    heavy,
-    alternatives,
-    // security
-    envCommitted:  envResult,
-    hardcodedKeys: keysResult,
-    auditVulns:    auditResult,
-    // clean
-    tempFiles:     tempResult,
-    emptyFolders:  foldersResult,
-  };
+function formatItem(item) {
+  if (typeof item === 'string') return item;
+  if (item.name && item.suggestion) return `${item.name}  →  ${item.suggestion}`;
+  if (item.name && item.gzipKb)    return `${item.name}  ${item.gzipKb} KB gzip`;
+  return JSON.stringify(item);
+}
 
-  // score each individual check
-  const checkScores = {};
-  for (const [key, check] of Object.entries(CHECKS)) {
-    checkScores[key] = {
-      pts:    scoreCheck(allResults[key], check),
-      maxPts: check.maxPts,
-      result: allResults[key],
-    };
+// ─── Sections ─────────────────────────────────────────────────────────────────
+
+function printScoreCard(score, grade) {
+  const col  = scoreColor(score);
+  const gcol = gradeColor(grade);
+  console.log('');
+  console.log(
+    '  ' + col(chalk.bold(`${score}`)) + chalk.dim('/100') +
+    '    ' + gcol(chalk.bold(`Grade ${grade}`))
+  );
+  console.log('');
+}
+
+function printCategories(categories) {
+  for (const cat of Object.values(categories)) {
+    console.log(
+      '  ' + bar(cat.pct) +
+      '  ' + scoreColor(cat.pct)(`${String(cat.pct).padStart(3)}%`) +
+      '  ' + chalk.white(cat.label) +
+      chalk.dim(`  ${cat.earned}/${cat.maxPts} pts`)
+    );
+  }
+  console.log('');
+}
+
+function printChecks(checks) {
+  logger.title('Check breakdown');
+  console.log('');
+
+  for (const [, val] of Object.entries(checks)) {
+    const { result, pts, maxPts } = val;
+
+    console.log(
+      '  ' + statusIcon(result.status) +
+      '  ' + chalk.white(result.label) +
+      chalk.dim(`  — ${result.summary}`) +
+      chalk.dim(`  [${pts}/${maxPts}]`)
+    );
+
+    if (result.status === 'warn' && result.data?.length) {
+      const preview = result.data.slice(0, 3);
+      preview.forEach((item) => {
+        console.log(chalk.dim(`       • ${formatItem(item)}`));
+      });
+      if (result.data.length > 3) {
+        console.log(chalk.dim(`       … and ${result.data.length - 3} more`));
+      }
+    }
   }
 
-  // roll up into categories
-  const categoryScores = {};
-  for (const [catKey, cat] of Object.entries(CATEGORIES)) {
-    const earned = cat.keys.reduce((sum, k) => sum + checkScores[k].pts, 0);
-    categoryScores[catKey] = {
-      label:  cat.label,
-      earned,
-      maxPts: cat.maxPts,
-      pct:    Math.round((earned / cat.maxPts) * 100),
-    };
+  console.log('');
+}
+
+function printFooter(score) {
+  if (score >= 90) {
+    logger.success('Excellent project health!');
+  } else if (score >= 70) {
+    logger.info('Good shape — a few things to tighten up.');
+  } else if (score >= 50) {
+    logger.warn('Some issues need attention.');
+  } else {
+    logger.error('Project needs significant work.');
+  }
+  console.log('');
+}
+
+// ─── Command entry ────────────────────────────────────────────────────────────
+
+export async function runScore() {
+  logger.title('Project health score');
+  startSpinner('Running all checks...');
+
+  let health;
+  try {
+    health = await computeHealthScore();
+  } catch (err) {
+    stopSpinner(false, 'Health score failed');
+    logger.error(err.message);
+    return;
   }
 
-  const totalEarned = Object.values(categoryScores).reduce((s, c) => s + c.earned, 0);
-  const totalMax    = Object.values(categoryScores).reduce((s, c) => s + c.maxPts, 0);
-  const score       = Math.round((totalEarned / totalMax) * 100);
+  stopSpinner(true, 'All checks complete');
 
-  return {
-    score,
-    grade:      letterGrade(score),
-    categories: categoryScores,
-    checks:     checkScores,
-    results:    allResults,
-  };
+  printScoreCard(health.score, health.grade);
+  printCategories(health.categories);
+  printChecks(health.checks);
+  printFooter(health.score);
+
+  return health;
 }
